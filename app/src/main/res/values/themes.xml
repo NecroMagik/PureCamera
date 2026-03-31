@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.PureCamera" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.PureCamera" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@android:color/system_accent1_500</item>
+        <item name="colorPrimaryVariant">@android:color/system_accent1_700</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">@android:color/system_accent2_500</item>
+        <item name="colorSecondaryVariant">@android:color/system_accent2_700</item>
+        <item name="colorOnSecondary">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+    </style>
 </resources>
