@@ -3,42 +3,47 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.necromagik.purecam2">
 
-    <!-- Запрос разрешений для камеры -->
+    <!-- Разрешение на использование камеры -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Разрешение для сохранения фото (для Android 12 и ниже) -->
+    <!-- Разрешение на запись в хранилище (для Android 12 и ниже) -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+        android:maxSdkVersion="33" />
 
-    <!-- Разрешение для чтения медиафайлов (Android 13+) -->
+    <!-- Для Android 13+ используем разрешение на фото/видео -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
-    <!-- Объявление, что приложению нужна камера -->
-    <uses-feature android:name="android.hardware.camera"
+    <!-- Для работы с камерой в фоне (опционально) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Указываем, что приложению нужна камера -->
+    <uses-feature
+        android:name="android.hardware.camera"
         android:required="true" />
-    <uses-feature android:name="android.hardware.camera.autofocus" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
         android:theme="@style/Theme.PureCamera"
-        android:requestLegacyExternalStorage="true"
-        tools:targetApi="33">
+        tools:targetApi="31">
 
-        <!-- Главная активность -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize">
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- FileProvider для совместимости с Android 7+ -->
+        <!-- FileProvider для сохранения фото в галерею (Android 7+) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

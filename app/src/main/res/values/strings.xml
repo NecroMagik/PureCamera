@@ -1,5 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PureCamera</string>
-    <string name="last_photo_preview">Последнее фото</string>
+    <string name="app_name">Pure Camera</string>
 </resources>

@@ -3,11 +3,10 @@ package com.necromagik.purecam2
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
+import android.graphics.*
 import android.hardware.camera2.*
+import android.media.Image
 import android.media.ImageReader
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -16,19 +15,21 @@ import android.os.HandlerThread
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import android.view.Gravity
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
-import android.widget.ImageView
+import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.Toast
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
@@ -36,547 +37,447 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "PureCamera"
-        private const val REQUEST_CAMERA_PERMISSION = 200
-        private const val MAX_PREVIEW_WIDTH = 1920
-        private const val MAX_PREVIEW_HEIGHT = 1080
-
-        private const val JPEG_QUALITY = 100
-        private const val HDR_ENABLED = true
-        private const val NOISE_REDUCTION_MODE = CaptureRequest.NOISE_REDUCTION_MODE_FAST
-        private const val EDGE_MODE = CaptureRequest.EDGE_MODE_FAST
-        private const val TONEMAP_MODE = CaptureRequest.TONEMAP_MODE_FAST
+        private const val REQUEST_CODE_PERMISSIONS = 101
     }
 
+    private val requiredPermissions = arrayOf(
+        Manifest.permission.CAMERA,
+        Manifest.permission.READ_MEDIA_IMAGES
+    )
+
+    private lateinit var viewfinderContainer: FrameLayout
+    private lateinit var captureButton: ImageButton
     private lateinit var textureView: TextureView
-    private lateinit var captureButton: FloatingActionButton
-    private lateinit var lastPhotoPreview: ImageView
 
     private var cameraManager: CameraManager? = null
     private var cameraDevice: CameraDevice? = null
-    private var cameraCaptureSession: CameraCaptureSession? = null
-    private var previewRequest: CaptureRequest? = null
-    private var previewRequestBuilder: CaptureRequest.Builder? = null
-
-    private var imageReader: ImageReader? = null
-
-    private var backgroundThread: HandlerThread? = null
+    private var captureSession: CameraCaptureSession? = null
+    private var previewRequest: CaptureRequest.Builder? = null
     private var backgroundHandler: Handler? = null
-    private val cameraExecutor = Executors.newSingleThreadExecutor()
-    private val cameraOpenCloseLock = Semaphore(1)
+    private var backgroundThread: HandlerThread? = null
 
     private var previewSize: Size? = null
     private var captureSize: Size? = null
+
+    private val cameraOpenCloseLock = Semaphore(1)
     private var cameraId: String? = null
-    private var isCameraReady = false
-    private var lastPhotoUri: Uri? = null
+    private var isTakingPicture = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        textureView = findViewById(R.id.textureView)
-        captureButton = findViewById(R.id.captureButton)
-        lastPhotoPreview = findViewById(R.id.lastPhotoPreview)
+        viewfinderContainer = findViewById(R.id.container)
+        captureButton = findViewById(R.id.capture_button)
 
-        captureButton.setOnClickListener {
-            takePhoto()
-        }
+        textureView = TextureView(this)
+        val layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        layoutParams.gravity = Gravity.CENTER
+        viewfinderContainer.addView(textureView, layoutParams)
 
-        textureView.surfaceTextureListener = surfaceTextureListener
-        checkAndRequestPermissions()
-    }
+        setupCaptureButton()
 
-    private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf<String>()
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.CAMERA)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
-                != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
-            }
-        }
-        else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
-        }
-
-        if (permissions.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_CAMERA_PERMISSION)
+        if (hasRequiredPermissions()) {
+            startCamera()
         } else {
-            startBackgroundThread()
-            openCamera()
+            ActivityCompat.requestPermissions(this, requiredPermissions, REQUEST_CODE_PERMISSIONS)
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        when (requestCode) {
-            REQUEST_CAMERA_PERMISSION -> {
-                if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                    startBackgroundThread()
-                    openCamera()
-                } else {
-                    Toast.makeText(this, "Для работы приложения необходимо разрешение на камеру", Toast.LENGTH_LONG).show()
-                    finish()
+    private fun setupCaptureButton() {
+        captureButton.setOnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    view.animate().scaleX(0.85f).scaleY(0.85f).setDuration(100).start()
+                }
+                MotionEvent.ACTION_UP -> {
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                    view.postDelayed({ takePhoto() }, 50)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
                 }
             }
+            true
         }
     }
 
-    private fun startBackgroundThread() {
-        backgroundThread = HandlerThread("CameraBackground").apply {
-            start()
-            backgroundHandler = Handler(looper)
+    private fun hasRequiredPermissions(): Boolean {
+        return requiredPermissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
-    private fun stopBackgroundThread() {
-        backgroundThread?.quitSafely()
-        try {
-            backgroundThread?.join()
-            backgroundThread = null
-            backgroundHandler = null
-        } catch (e: InterruptedException) {
-            Log.e(TAG, "Ошибка остановки фонового потока: ${e.message}")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_PERMISSIONS && hasRequiredPermissions()) {
+            startCamera()
+        } else {
+            Toast.makeText(this, "Нужны разрешения для работы камеры", Toast.LENGTH_LONG).show()
+            finish()
         }
     }
 
-    private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
-            openCamera()
-        }
-
-        override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
-            configureTransform(width, height)
-        }
-
-        override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
-            return true
-        }
-
-        override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {
-        }
-    }
-
-    private fun openCamera() {
-        if (!hasCameraPermission()) {
-            Log.e(TAG, "Нет разрешения на камеру")
-            return
-        }
+    private fun startCamera() {
+        backgroundThread = HandlerThread("CameraThread").apply { start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
 
         cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
 
         try {
-            cameraId = cameraManager?.cameraIdList?.firstOrNull { id ->
-                val characteristics = cameraManager?.getCameraCharacteristics(id)
-                characteristics?.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-            }
-
-            if (cameraId == null) {
-                Log.e(TAG, "Задняя камера не найдена")
-                Toast.makeText(this, "Камера не найдена", Toast.LENGTH_SHORT).show()
-                finish()
-                return
-            }
-
-            val characteristics = cameraManager?.getCameraCharacteristics(cameraId!!)
-            characteristics?.let { checkManualSensorSupport(it) }
-
-            if (cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
-                cameraManager?.openCamera(cameraId!!, stateCallback, backgroundHandler)
-            } else {
-                Log.e(TAG, "Не удалось получить доступ к камере - устройство занято")
-                Toast.makeText(this, "Камера занята другим приложением", Toast.LENGTH_SHORT).show()
+            cameraManager?.cameraIdList?.forEach { id ->
+                val characteristics = cameraManager!!.getCameraCharacteristics(id)
+                if (characteristics.get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_BACK) {
+                    cameraId = id
+                    selectOptimalSizes(characteristics)
+                    return@forEach
+                }
             }
         } catch (e: CameraAccessException) {
-            Log.e(TAG, "Ошибка доступа к камере: ${e.message}")
-            Toast.makeText(this, "Ошибка доступа к камере: ${e.message}", Toast.LENGTH_SHORT).show()
-        } catch (e: InterruptedException) {
-            Log.e(TAG, "Прерывание при открытии камеры: ${e.message}")
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException: ${e.message}")
-            Toast.makeText(this, "Нет разрешения на камеру", Toast.LENGTH_SHORT).show()
+            Log.e(TAG, "Ошибка доступа к камере", e)
         }
+
+        if (cameraId == null) {
+            Toast.makeText(this, "Задняя камера не найдена", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        textureView.surfaceTextureListener = createSurfaceTextureListener()
     }
 
-    private fun checkManualSensorSupport(characteristics: CameraCharacteristics) {
-        val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+    private fun selectOptimalSizes(characteristics: CameraCharacteristics) {
+        val configMap = characteristics.get(
+            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        ) ?: return
 
-        if (capabilities != null) {
-            val hasManualSensor = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
-            val hasManualPostProcessing = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING)
-            val hasRaw = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+        val previewSizes = configMap.getOutputSizes(SurfaceTexture::class.java)
+        val captureSizes = configMap.getOutputSizes(ImageFormat.JPEG)
 
-            Log.d(TAG, "Поддержка ручного сенсора: $hasManualSensor")
-            Log.d(TAG, "Поддержка ручной постобработки: $hasManualPostProcessing")
-            Log.d(TAG, "Поддержка RAW: $hasRaw")
+        previewSize = previewSizes.maxByOrNull { it.width * it.height }
+        captureSize = captureSizes.maxByOrNull { it.width * it.height }
 
-            val postRawBoostRange = characteristics.get(CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE)
-            if (postRawBoostRange != null) {
-                Log.d(TAG, "Диапазон POST_RAW_SENSITIVITY_BOOST: ${postRawBoostRange.lower} - ${postRawBoostRange.upper}")
-            }
-        }
+        Log.d(TAG, "Selected Preview: ${previewSize?.width}x${previewSize?.height}")
+        Log.d(TAG, "Selected Capture: ${captureSize?.width}x${captureSize?.height}")
     }
 
-    private fun hasCameraPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    private fun createSurfaceTextureListener() = object : TextureView.SurfaceTextureListener {
+        @RequiresPermission(Manifest.permission.CAMERA)
+        override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+            openCamera()
+        }
+
+        override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+            adjustTextureTransform(width, height)
+        }
+
+        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture) = true
+        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
     }
 
-    private val stateCallback = object : CameraDevice.StateCallback() {
-        override fun onOpened(camera: CameraDevice) {
-            cameraOpenCloseLock.release()
-            cameraDevice = camera
-            Log.d(TAG, "Камера успешно открыта")
-            createCameraPreview()
-        }
+    @RequiresPermission(Manifest.permission.CAMERA)
+    private fun openCamera() {
+        if (cameraId == null || !hasRequiredPermissions()) return
 
-        override fun onDisconnected(camera: CameraDevice) {
-            cameraOpenCloseLock.release()
-            camera.close()
-            cameraDevice = null
-            Log.d(TAG, "Камера отключена")
-            isCameraReady = false
-            captureButton.isEnabled = false
-        }
-
-        override fun onError(camera: CameraDevice, error: Int) {
-            cameraOpenCloseLock.release()
-            camera.close()
-            cameraDevice = null
-            Log.e(TAG, "Ошибка камеры: $error")
-            Toast.makeText(this@MainActivity, "Ошибка камеры: $error", Toast.LENGTH_SHORT).show()
-            isCameraReady = false
-            captureButton.isEnabled = false
-        }
-    }
-
-    private fun createCameraPreview() {
         try {
-            val surfaceTexture = textureView.surfaceTexture ?: return
-
-            val characteristics = cameraManager?.getCameraCharacteristics(cameraId!!)
-            val map = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-
-            if (map == null) {
-                Log.e(TAG, "Не удалось получить конфигурацию потоков")
-                return
+            if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
+                throw RuntimeException("Timeout waiting for camera")
             }
 
-            previewSize = chooseOptimalSize(
-                map.getOutputSizes(SurfaceTexture::class.java),
-                textureView.width, textureView.height,
-                MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT
+            cameraManager?.openCamera(cameraId!!, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraOpenCloseLock.release()
+                    cameraDevice = camera
+                    Log.d(TAG, "Camera opened")
+                    startPreview()
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    cameraOpenCloseLock.release()
+                    camera.close()
+                    cameraDevice = null
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    cameraOpenCloseLock.release()
+                    camera.close()
+                    cameraDevice = null
+                    Log.e(TAG, "Camera error: $error")
+                }
+            }, backgroundHandler)
+        } catch (e: Exception) {
+            cameraOpenCloseLock.release()
+            Log.e(TAG, "Error opening camera", e)
+        }
+    }
+
+    private fun startPreview() {
+        if (cameraDevice == null || previewSize == null) return
+
+        textureView.surfaceTexture?.setDefaultBufferSize(
+            previewSize!!.width,
+            previewSize!!.height
+        )
+
+        val surface = Surface(textureView.surfaceTexture)
+
+        try {
+            previewRequest = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            previewRequest!!.addTarget(surface)
+
+            previewRequest!!.set(
+                CaptureRequest.CONTROL_SCENE_MODE,
+                CaptureRequest.CONTROL_SCENE_MODE_DISABLED
+            )
+            previewRequest!!.set(
+                CaptureRequest.NOISE_REDUCTION_MODE,
+                CaptureRequest.NOISE_REDUCTION_MODE_OFF
+            )
+            previewRequest!!.set(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             )
 
-            captureSize = chooseOptimalSize(
-                map.getOutputSizes(ImageFormat.JPEG),
-                MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT,
-                Int.MAX_VALUE, Int.MAX_VALUE
-            )
-
-            surfaceTexture.setDefaultBufferSize(previewSize!!.width, previewSize!!.height)
-            val previewSurface = Surface(surfaceTexture)
-
-            imageReader = ImageReader.newInstance(
-                captureSize!!.width, captureSize!!.height,
-                ImageFormat.JPEG, 2
-            ).apply {
-                setOnImageAvailableListener({ reader ->
-                    cameraExecutor.execute {
-                        val image = reader.acquireLatestImage()
-                        image?.let { saveImage(it) }
-                    }
-                }, backgroundHandler)
-            }
-
-            previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            previewRequestBuilder?.addTarget(previewSurface)
-
-            previewRequestBuilder?.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
-
-            if (HDR_ENABLED) {
-                previewRequestBuilder?.set(CaptureRequest.CONTROL_ENABLE_ZSL, true)
-                previewRequestBuilder?.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                Log.d(TAG, "HDR режим включён")
-            } else {
-                previewRequestBuilder?.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                Log.d(TAG, "HDR режим отключён")
-            }
-
-            previewRequestBuilder?.set(CaptureRequest.NOISE_REDUCTION_MODE, NOISE_REDUCTION_MODE)
-            Log.d(TAG, "Шумоподавление: FAST режим")
-
-            previewRequestBuilder?.set(CaptureRequest.EDGE_MODE, EDGE_MODE)
-            Log.d(TAG, "Резкость: FAST режим")
-
-            previewRequestBuilder?.set(CaptureRequest.TONEP_MODE, TONEMAP_MODE)
-            Log.d(TAG, "Тональная кривая: FAST режим")
-
-            previewRequestBuilder?.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-            Log.d(TAG, "Баланс белого: AUTO")
-
-            try {
-                previewRequestBuilder?.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 0)
-                Log.d(TAG, "POST_RAW_SENSITIVITY_BOOST отключён")
-            } catch (e: IllegalArgumentException) {
-                Log.d(TAG, "POST_RAW_SENSITIVITY_BOOST не поддерживается устройством")
-            }
-
-            previewRequest = previewRequestBuilder?.build()
-
-            val surfaces = listOf(previewSurface, imageReader!!.surface)
-
-            cameraDevice?.createCaptureSession(
-                surfaces,
+            cameraDevice!!.createCaptureSession(
+                listOf(surface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
-                        cameraCaptureSession = session
-                        try {
-                            session.setRepeatingRequest(previewRequest!!, null, backgroundHandler)
-                            isCameraReady = true
-                            captureButton.isEnabled = true
-                            Log.d(TAG, "Превью запущено успешно")
-                        } catch (e: CameraAccessException) {
-                            Log.e(TAG, "Ошибка запуска превью: ${e.message}")
-                        } catch (e: IllegalStateException) {
-                            Log.e(TAG, "IllegalStateException: ${e.message}")
+                        captureSession = session
+                        session.setRepeatingRequest(
+                            previewRequest!!.build(),
+                            null,
+                            backgroundHandler
+                        )
+                        textureView.post {
+                            adjustTextureTransform(textureView.width, textureView.height)
                         }
+                        Log.d(TAG, "Preview started")
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e(TAG, "Не удалось настроить сессию захвата")
-                        Toast.makeText(this@MainActivity, "Не удалось настроить камеру", Toast.LENGTH_SHORT).show()
+                        Log.e(TAG, "Preview configuration failed")
                     }
                 },
                 backgroundHandler
             )
-        } catch (e: CameraAccessException) {
-            Log.e(TAG, "Ошибка создания превью: ${e.message}")
-        } catch (e: IllegalStateException) {
-            Log.e(TAG, "Некорректное состояние: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting preview", e)
         }
     }
 
-    private fun chooseOptimalSize(choices: Array<Size>?, width: Int, height: Int, maxWidth: Int, maxHeight: Int): Size? {
-        if (choices == null) return null
+    /**
+     * Принудительное центрирование видео
+     */
+    private fun adjustTextureTransform(viewWidth: Int, viewHeight: Int) {
+        if (previewSize == null) return
 
-        val validSizes = choices.filter { size ->
-            size.width <= maxWidth && size.height <= maxHeight &&
-                    size.width >= width && size.height >= height
-        }
+        val videoWidth = previewSize!!.width
+        val videoHeight = previewSize!!.height
 
-        return if (validSizes.isNotEmpty()) {
-            validSizes.maxByOrNull { it.width * it.height }
-        } else {
-            choices.maxByOrNull { it.width * it.height }
-        }
-    }
+        val scaleW = viewWidth.toFloat() / videoWidth
+        val scaleH = viewHeight.toFloat() / videoHeight
+        val scale = if (scaleW > scaleH) scaleW else scaleH
 
-    private fun configureTransform(viewWidth: Int, viewHeight: Int) {
-        Log.d(TAG, "Transform configured: $viewWidth x $viewHeight")
+        val scaledWidth = videoWidth * scale
+        val scaledHeight = videoHeight * scale
+        val left = (viewWidth - scaledWidth) / 2f
+        val top = (viewHeight - scaledHeight) / 2f
+
+        textureView.scaleX = scale
+        textureView.scaleY = scale
+        textureView.translationX = left
+        textureView.translationY = top
+
+        Log.d(TAG, "Transform: scale=$scale, left=$left, top=$top")
     }
 
     private fun takePhoto() {
-        if (!isCameraReady || cameraDevice == null) {
-            Log.w(TAG, "Камера не готова для съёмки")
+        if (isTakingPicture) return
+
+        if (cameraDevice == null || captureSession == null || captureSize == null) {
             Toast.makeText(this, "Камера не готова", Toast.LENGTH_SHORT).show()
             return
         }
 
+        isTakingPicture = true
+        Log.d(TAG, "Taking picture...")
+
+        val imageReader = ImageReader.newInstance(
+            captureSize!!.width,
+            captureSize!!.height,
+            ImageFormat.JPEG,
+            2
+        )
+
+        imageReader.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage()
+            image?.let {
+                val buffer = it.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                it.close()
+                backgroundHandler?.post { savePhoto(bytes) }
+            }
+            reader.close()
+        }, backgroundHandler)
+
+        val captureRequest = try {
+            cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating capture request", e)
+            isTakingPicture = false
+            return
+        }
+
+        captureRequest.addTarget(imageReader.surface)
+
+        captureRequest.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
+        captureRequest.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
+        captureRequest.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+        captureRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+
+        val rotation = windowManager.defaultDisplay.rotation
+        captureRequest.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(rotation))
+
         try {
-            val captureBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            captureBuilder?.addTarget(imageReader!!.surface)
+            captureSession!!.stopRepeating()
+            val surfaces = listOf(Surface(textureView.surfaceTexture), imageReader.surface)
 
-            captureBuilder?.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
-
-            if (HDR_ENABLED) {
-                captureBuilder?.set(CaptureRequest.CONTROL_ENABLE_ZSL, true)
-                captureBuilder?.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            } else {
-                captureBuilder?.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            }
-
-            captureBuilder?.set(CaptureRequest.NOISE_REDUCTION_MODE, NOISE_REDUCTION_MODE)
-            captureBuilder?.set(CaptureRequest.EDGE_MODE, EDGE_MODE)
-            captureBuilder?.set(CaptureRequest.TONEMAP_MODE, TONEMAP_MODE)
-            captureBuilder?.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-            captureBuilder?.set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY.toByte())
-
-            val rotation = windowManager.defaultDisplay.rotation
-            captureBuilder?.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(rotation))
-
-            try {
-                captureBuilder?.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 0)
-            } catch (e: IllegalArgumentException) {
-            }
-
-            cameraCaptureSession?.stopRepeating()
-
-            cameraCaptureSession?.capture(captureBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
-                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
-                    super.onCaptureCompleted(session, request, result)
-                    Log.d(TAG, "Фото захвачено успешно")
-                    try {
-                        session.setRepeatingRequest(previewRequest!!, null, backgroundHandler)
-                    } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Ошибка возобновления превью: ${e.message}")
+            cameraDevice!!.createCaptureSession(
+                surfaces,
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        session.capture(captureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
+                            override fun onCaptureCompleted(
+                                session: CameraCaptureSession,
+                                request: CaptureRequest,
+                                result: TotalCaptureResult
+                            ) {
+                                recreatePreviewSession()
+                                isTakingPicture = false
+                            }
+                        }, backgroundHandler)
                     }
-                }
 
-                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
-                    super.onCaptureFailed(session, request, failure)
-                    Log.e(TAG, "Захват фото не удался: ${failure.reason}")
-                    Toast.makeText(this@MainActivity, "Не удалось сделать фото", Toast.LENGTH_SHORT).show()
-                    try {
-                        session.setRepeatingRequest(previewRequest!!, null, backgroundHandler)
-                    } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Ошибка возобновления превью после ошибки: ${e.message}")
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        recreatePreviewSession()
+                        isTakingPicture = false
                     }
-                }
-            }, backgroundHandler)
-
-        } catch (e: CameraAccessException) {
-            Log.e(TAG, "Ошибка при захвате фото: ${e.message}")
-            Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show()
-            try {
-                cameraCaptureSession?.setRepeatingRequest(previewRequest!!, null, backgroundHandler)
-            } catch (ex: CameraAccessException) {
-                Log.e(TAG, "Не удалось возобновить превью: ${ex.message}")
-            }
+                },
+                backgroundHandler
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error taking picture", e)
+            recreatePreviewSession()
+            isTakingPicture = false
         }
     }
 
-    private fun getOrientation(rotation: Int): Int {
-        return when (rotation) {
-            android.view.Surface.ROTATION_0 -> 90
-            android.view.Surface.ROTATION_90 -> 0
-            android.view.Surface.ROTATION_180 -> 270
-            else -> 180
+    private fun recreatePreviewSession() {
+        if (cameraDevice == null || previewSize == null) return
+
+        textureView.surfaceTexture?.setDefaultBufferSize(
+            previewSize!!.width,
+            previewSize!!.height
+        )
+
+        val surface = Surface(textureView.surfaceTexture)
+
+        try {
+            cameraDevice!!.createCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        previewRequest?.let {
+                            session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                        }
+                        textureView.post {
+                            adjustTextureTransform(textureView.width, textureView.height)
+                        }
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {}
+                },
+                backgroundHandler
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error recreating preview session", e)
         }
     }
 
-    private fun saveImage(image: android.media.Image) {
-        val buffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-        image.close()
-
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val fileName = "IMG_$timestamp.jpg"
-
-        var savedUri: Uri? = null
+    private fun savePhoto(bytes: ByteArray) {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val filename = "IMG_${timestamp}.jpg"
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/PureCamera")
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/PureCamera")
                 }
-
-                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 uri?.let {
-                    contentResolver.openOutputStream(it)?.use { outputStream ->
-                        outputStream.write(bytes)
-                        savedUri = it
-                        Log.d(TAG, "Фото сохранено через MediaStore: $fileName")
-                    }
+                    contentResolver.openOutputStream(it)?.use { stream -> stream.write(bytes) }
+                    runOnUiThread { Toast.makeText(this, "Фото сохранено: $filename", Toast.LENGTH_SHORT).show() }
                 }
             } else {
-                val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-                val pureCameraDir = File(dcimDir, "PureCamera")
-
-                if (!pureCameraDir.exists()) {
-                    pureCameraDir.mkdirs()
-                }
-
-                val imageFile = File(pureCameraDir, fileName)
-                FileOutputStream(imageFile).use { outputStream ->
-                    outputStream.write(bytes)
-                }
-
-                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                    MediaStore.Images.Media.insertImage(
-                        contentResolver,
-                        imageFile.absolutePath,
-                        fileName,
-                        null
-                    )
-                }
-
-                savedUri = Uri.fromFile(imageFile)
-                Log.d(TAG, "Фото сохранено напрямую: ${imageFile.absolutePath}")
-            }
-
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P && savedUri != null) {
-                val intent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, savedUri)
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "PureCamera")
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, filename)
+                FileOutputStream(file).use { stream -> stream.write(bytes) }
+                val intent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+                intent.data = android.net.Uri.fromFile(file)
                 sendBroadcast(intent)
+                runOnUiThread { Toast.makeText(this, "Фото сохранено: ${file.absolutePath}", Toast.LENGTH_SHORT).show() }
             }
-
-            runOnUiThread {
-                lastPhotoUri = savedUri
-                savedUri?.let { uri ->
-                    val inputStream = contentResolver.openInputStream(uri)
-                    val bitmap = BitmapFactory.decodeStream(inputStream)
-                    lastPhotoPreview.setImageBitmap(bitmap)
-                    inputStream?.close()
-                }
-                Toast.makeText(this, "Фото сохранено: $fileName", Toast.LENGTH_SHORT).show()
-            }
-
         } catch (e: Exception) {
-            Log.e(TAG, "Ошибка сохранения фото: ${e.message}")
-            runOnUiThread {
-                Toast.makeText(this, "Ошибка сохранения: ${e.message}", Toast.LENGTH_LONG).show()
-            }
+            Log.e(TAG, "Error saving photo", e)
+            runOnUiThread { Toast.makeText(this, "Ошибка сохранения", Toast.LENGTH_LONG).show() }
         }
     }
 
-    private fun closeCamera() {
-        try {
-            cameraOpenCloseLock.acquire()
-            cameraCaptureSession?.close()
-            cameraCaptureSession = null
-            cameraDevice?.close()
-            cameraDevice = null
-            imageReader?.close()
-            imageReader = null
-            isCameraReady = false
-            captureButton.isEnabled = false
-            Log.d(TAG, "Камера закрыта")
-        } catch (e: InterruptedException) {
-            Log.e(TAG, "Прерывание при закрытии камеры: ${e.message}")
-        } finally {
-            cameraOpenCloseLock.release()
-        }
+    private fun getOrientation(rotation: Int): Int = when (rotation) {
+        Surface.ROTATION_0 -> 90
+        Surface.ROTATION_90 -> 0
+        Surface.ROTATION_180 -> 270
+        Surface.ROTATION_270 -> 180
+        else -> 90
     }
 
     override fun onResume() {
         super.onResume()
-        startBackgroundThread()
-        if (textureView.isAvailable) {
-            openCamera()
-        } else {
-            textureView.surfaceTextureListener = surfaceTextureListener
-        }
+        if (hasRequiredPermissions()) startCamera()
     }
 
     override fun onPause() {
         super.onPause()
         closeCamera()
-        stopBackgroundThread()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         closeCamera()
-        cameraExecutor.shutdown()
+        backgroundThread?.quitSafely()
+    }
+
+    private fun closeCamera() {
+        try {
+            captureSession?.close()
+            captureSession = null
+            cameraDevice?.close()
+            cameraDevice = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing camera", e)
+        }
     }
 }

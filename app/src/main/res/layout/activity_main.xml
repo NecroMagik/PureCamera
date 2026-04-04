@@ -5,51 +5,35 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="@android:color/black"
+    tools:context=".MainActivity">
 
-    <!-- TextureView для превью камеры -->
-    <TextureView
-        android:id="@+id/textureView"
+    <!-- Контейнер для предпросмотра камеры -->
+    <FrameLayout
+        android:id="@+id/container"
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <!-- Нижняя панель с элементами управления -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="32dp"
-        android:gravity="center"
-        android:orientation="horizontal"
-        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
+        app:layout_constraintDimensionRatio="3:4"
+        android:background="@drawable/camera_viewfinder_border"
+        android:clipChildren="false"
+        android:gravity="center" />
 
-        <!-- Кнопка спуска -->
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:id="@+id/captureButton"
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:layout_marginEnd="32dp"
-            android:clickable="false"
-            android:enabled="false"
-            android:src="@android:drawable/ic_menu_camera"
-            app:backgroundTint="?attr/colorPrimary"
-            app:tint="?attr/colorOnPrimary" />
-
-        <!-- Превью последнего фото -->
-        <ImageView
-            android:id="@+id/lastPhotoPreview"
-            android:layout_width="60dp"
-            android:layout_height="60dp"
-            android:background="@drawable/photo_frame_border"
-            android:padding="2dp"
-            android:scaleType="centerCrop"
-            android:contentDescription="@string/last_photo_preview" />
-
-    </LinearLayout>
+    <!-- Кнопка съёмки -->
+    <ImageButton
+        android:id="@+id/capture_button"
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:src="@drawable/camera_shutter_button"
+        android:background="@android:color/transparent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        android:layout_marginBottom="32dp"
+        android:scaleType="fitCenter"
+        android:contentDescription="Сделать фото" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
